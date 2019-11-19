@@ -57,7 +57,7 @@ class LSTMClassifier(nn.Module):
         super(LSTMClassifier, self).__init__()
         self.hidden_dim = hidden_dim
         weight = torch.cuda.FloatTensor(bert_weights)
-        weight = weight.to(torch.device('cuda:0'))
+        weight = weight.to(torch.device('cuda:1'))
         self.word_embeddings= nn.Embedding.from_pretrained(weight)
         self.word_embeddings.weight.requires_grad=False
         self.lstm = nn.LSTM(embedding_dim, hidden_dim)
@@ -65,8 +65,8 @@ class LSTMClassifier(nn.Module):
         self.hidden = self.init_hidden()
 
     def init_hidden(self):
-        return (autograd.Variable(torch.zeros(1, 1, self.hidden_dim).to(torch.device('cuda:0'))),
-                autograd.Variable(torch.zeros(1, 1, self.hidden_dim).to(torch.device('cuda:0'))))
+        return (autograd.Variable(torch.zeros(1, 1, self.hidden_dim).to(torch.device('cuda:1'))),
+                autograd.Variable(torch.zeros(1, 1, self.hidden_dim).to(torch.device('cuda:1'))))
 
     def forward(self, sentence):
         embeds = self.word_embeddings(sentence)
@@ -90,13 +90,15 @@ def train(train_data, dev_data, word_to_ix, label_to_ix, bert_weights):
     EMBEDDING_DIM = 768
     HIDDEN_DIM = 768
     EPOCH = 50
-    best_dev_acc = 0.0
+    best_dev_f = 0.0
+    best_dev_p = 0.0
+    best_dev_r = 0.0
     model = LSTMClassifier(embedding_dim=EMBEDDING_DIM,hidden_dim=HIDDEN_DIM,
-                           vocab_size=len(word_to_ix),label_size=len(label_to_ix), bert_weights=bert_weights)
-    model.to(torch.device('cuda:0'))
+                           vocab_size=len(word_to_ix),label_size=len(label_to_ix),bert_weights=bert_weights)
+    model.to(torch.device('cuda:1'))
 
-    w = [1.0, 2.0]
-    class_weights = torch.FloatTensor(w).to(torch.device('cuda:0'))
+    w = [1.0, 1.0]
+    class_weights = torch.FloatTensor(w).to(torch.device('cuda:1'))
     loss_function = nn.NLLLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(),lr = 1e-3)
     #optimizer = torch.optim.SGD(model.parameters(), lr = 1e-2)
@@ -106,13 +108,18 @@ def train(train_data, dev_data, word_to_ix, label_to_ix, bert_weights):
         print('epoch: %d start!' % i)
         train_epoch(model, train_data, loss_function, optimizer, word_to_ix, label_to_ix, i)
         #print('now best dev acc:',best_dev_acc)
-        print('now best dev fscore:',best_dev_acc)
-        dev_acc = evaluate(model,dev_data,loss_function,word_to_ix,label_to_ix,'dev')
-        if dev_acc > best_dev_acc:
-            best_dev_acc = dev_acc
+        print('best dev fscore:',best_dev_f,"precision",best_dev_p,"recall",best_dev_r)
+        rec, prec, fscore, pred_res, pred_logs = evaluate(model,dev_data,loss_function,word_to_ix,label_to_ix,'dev')
+        if fscore > best_dev_f:
+            best_dev_f = fscore
+            best_dev_r = rec
+            best_dev_p = prec
             #os.system('rm mr_best_model_acc_*.model')
             print('New Best Dev!!!')
-            torch.save(model.state_dict(), 'best_models/mr_best_model_acc_' + str(int(dev_acc*10000)) + '.model')
+            with open("deep_results", "w+") as f:
+                for j, p in enumerate(pred_res):
+                    f.write(str(p[0]) + "\t" + str(pred_logs[j][0]) + "\t" + str(pred_logs[j][1]) + "\n")
+            #torch.save(model.state_dict(), 'best_models/mr_best_model_acc_' + str(int(dev_acc*10000)) + '.model')
             no_up = 0
         else:
             no_up += 1
@@ -125,6 +132,7 @@ def evaluate(model, data, loss_function, word_to_ix, label_to_ix, name ='dev'):
     avg_loss = 0.0
     truth_res = []
     pred_res = []
+    pred_logs = []
 
     for sent, label in data:
         label = label.tolist()[0]
@@ -133,12 +141,13 @@ def evaluate(model, data, loss_function, word_to_ix, label_to_ix, name ='dev'):
         model.hidden = model.init_hidden()
         sent = prepare_sequence(sent, word_to_ix)
         label = prepare_label(label, label_to_ix)
-        sent = sent.to(torch.device('cuda:0'))
-        label = label.to(torch.device('cuda:0'))
+        sent = sent.to(torch.device('cuda:1'))
+        label = label.to(torch.device('cuda:1'))
         pred = model(sent)
         pred_label = pred.data.max(1)[1].cpu().numpy()
+        pred_logs.append(pred.data.cpu().numpy().tolist()[0])
         pred_res.append(pred_label)
-        # model.zero_grad()
+        # model.zero_grad() # should I keep this when I am evaluating the model?
         loss = loss_function(pred, label)
         avg_loss += loss.item()
     avg_loss /= len(data)
@@ -146,7 +155,7 @@ def evaluate(model, data, loss_function, word_to_ix, label_to_ix, name ='dev'):
     precision, recall, fscore = get_precision_recall_fscore(truth_res, pred_res)
     #print(name + ' avg_loss:%g dev acc:%g' % (avg_loss, acc ))
     print(name + ' avg_loss:%g dev prec:%g dev rec:%g dev fscore:%g' % (avg_loss, precision, recall, fscore ))
-    return fscore
+    return precision, recall, fscore, pred_res, pred_logs
 
 
 def train_epoch(model, train_data, loss_function, optimizer, word_to_ix, label_to_ix, i):
@@ -165,8 +174,8 @@ def train_epoch(model, train_data, loss_function, optimizer, word_to_ix, label_t
         model.hidden = model.init_hidden()
         sent = prepare_sequence(sent, word_to_ix)
         label = prepare_label(label, label_to_ix)
-        sent = sent.to(torch.device('cuda:0'))
-        label = label.to(torch.device('cuda:0'))
+        sent = sent.to(torch.device('cuda:1'))
+        label = label.to(torch.device('cuda:1'))
         pred = model(sent)
         pred_label = pred.data.max(1)[1].cpu().numpy()
         pred_res.append(pred_label)
@@ -196,7 +205,7 @@ def main():
     for sen in word2idx:
         for np_en in word2idx[sen]['sentence_en']:
             for np_hu in word2idx[sen]['sentence_hun']:
-                if (str(np_en[0]), str(np_hu[0])) in sentences[sen]['aligns']:
+                if (str(np_en[0]), str(np_hu[0])) in sentences[sen]['aligns_filtered']:
                     data_true.append((" ".join(np_en[1]) + " " + " ".join(np_hu[1]), 1))
                     labels_true.append(1)
                 else:
@@ -205,9 +214,12 @@ def main():
 
     tag_to_ix = {0: 0, 1: 1}
 
-    tr_data_true, tst_data_true = split(data_true, test_size=0.2)
-    tr_data_false, tst_data_false= split(data_false, test_size=0.2)
-    tr_data_false = random.choices(tr_data_false, k=13946)
+    #random.shuffle(data_true)
+    #random.shuffle(data_false)
+
+    tr_data_true, tst_data_true = split(data_true, test_size=0.2, random_state=20)
+    tr_data_false, tst_data_false= split(data_false, test_size=0.2, random_state=20)
+    #tr_data_false = random.choices(tr_data_false, k=13946)
     tr_data = tr_data_true + tr_data_false
     tst_data = tst_data_true + tst_data_false
 
@@ -215,15 +227,26 @@ def main():
     use_gpu = torch.cuda.is_available()
     learning_rate = 0.01
     from torch.utils.data import DataLoader, TensorDataset
+
+    weights = []
+    for i in tr_data:
+        if i[1] == 1:
+            weights.append(6.0)
+        else:
+            weights.append(1.0)
+
+    sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+
     train_loader = DataLoader(tr_data,
                             batch_size=batch_size,
-                            shuffle=True,
+                            sampler=sampler,
+                           # shuffle=True,
                             num_workers=4
                             )
 
     test_loader = DataLoader(tst_data,
                             batch_size=batch_size,
-                            shuffle=True,
+                            shuffle=False,
                             num_workers=4
                             )
     train(train_loader, test_loader, voc_to_id, tag_to_ix, bert_weights)
